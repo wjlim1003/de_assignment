@@ -1,0 +1,102 @@
+# =============================================================================
+# Task 2: Process and Clean Water Quality Data
+#
+# This script reads the raw Parquet data from HDFS, performs a series of
+# cleaning, transformation, and enrichment steps, and saves the final,
+# processed dataset back to HDFS in Parquet format.
+# =============================================================================
+
+# Import necessary PySpark libraries and functions
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, to_timestamp, to_date, year, month, dayofmonth, dayofweek, hour, minute
+from pyspark.sql.types import DoubleType
+
+def main():
+    """
+    Main function to execute the data processing pipeline.
+    """
+    # --- Configuration ---
+    HDFS_RAW_DATA_PATH = 'hdfs://localhost:9000/user/student/water_quality_raw'
+    HDFS_PROCESSED_DATA_PATH = 'hdfs://localhost:9000/user/student/water_quality_processed'
+
+    # --- Initialization ---
+    spark = SparkSession.builder.appName("WaterQualityProcessing").getOrCreate()
+    spark.sparkContext.setLogLevel("WARN")
+    print("Spark session created successfully.")
+
+    try:
+        # --- 1. Load Raw Data ---
+        print(f"\n--- Step 1: Loading raw data from {HDFS_RAW_DATA_PATH} ---")
+        df_raw = spark.read.parquet(HDFS_RAW_DATA_PATH)
+        print(f"Successfully loaded {df_raw.count()} raw records.")
+
+        # --- 2. Drop Unimportant Columns ---
+        print("\n--- Step 2: Dropping unimportant columns ---")
+        columns_to_drop = [
+            "Record number", "Chlorophyll [quality]", "Temperature [quality]",
+            "Dissolved Oxygen [quality]", "Dissolved Oxygen (%Saturation) [quality]",
+            "pH [quality]", "Salinity [quality]", "Specific Conductance [quality]",
+            "Turbidity [quality]"
+        ]
+        df_dropped = df_raw.drop(*columns_to_drop)
+        print("Columns dropped successfully.")
+
+        # --- 3. Handle Missing Values ---
+        print("\n--- Step 3: Removing any rows with missing values ---")
+        df_no_missing = df_dropped.na.drop()
+        print("Rows with missing values removed.")
+
+        # --- 4. Convert Data Types ---
+        print("\n--- Step 4: Converting data types ---")
+        df_typed = df_no_missing.withColumn("Timestamp", to_timestamp(col("Timestamp"), "M/d/yyyy H:mm"))
+        numeric_cols = [
+            "Average Water Speed", "Average Water Direction", "Chlorophyll", "Temperature",
+            "Dissolved Oxygen", "Dissolved Oxygen (%Saturation)", "pH", "Salinity",
+            "Specific Conductance", "Turbidity"
+        ]
+        for col_name in numeric_cols:
+            df_typed = df_typed.withColumn(col_name, col(col_name).cast(DoubleType()))
+        print("Data types converted successfully.")
+
+        # --- 5. Rename Columns ---
+        print("\n--- Step 5: Renaming columns to be script-friendly ---")
+        df_renamed = df_typed.withColumnRenamed("Timestamp", "timestamp") \
+                             .withColumnRenamed("Average Water Speed", "water_speed_avg") \
+                             .withColumnRenamed("Average Water Direction", "water_direction_avg") \
+                             .withColumnRenamed("Chlorophyll", "chlorophyll") \
+                             .withColumnRenamed("Temperature", "temperature_c") \
+                             .withColumnRenamed("Dissolved Oxygen", "dissolved_oxygen_mgL") \
+                             .withColumnRenamed("Dissolved Oxygen (%Saturation)", "dissolved_oxygen_pct") \
+                             .withColumnRenamed("pH", "ph") \
+                             .withColumnRenamed("Salinity", "salinity") \
+                             .withColumnRenamed("Specific Conductance", "spec_conductance_uS_cm") \
+                             .withColumnRenamed("Turbidity", "turbidity_ntu")
+        print("Columns renamed successfully.")
+
+        # --- 6. Enrich Data with Time-Based Features ---
+        print("\n--- Step 6: Enriching data with time-based features ---")
+        df_enriched = df_renamed.withColumn("date", to_date(col("timestamp"))) \
+                                 .withColumn("year", year(col("timestamp"))) \
+                                 .withColumn("month", month(col("timestamp"))) \
+                                 .withColumn("day_of_month", dayofmonth(col("timestamp"))) \
+                                 .withColumn("day_of_week", dayofweek(col("timestamp"))) \
+                                 .withColumn("hour", hour(col("timestamp"))) \
+                                 .withColumn("minute", minute(col("timestamp")))
+        print("Data enriched successfully.")
+        print("Final schema of the processed data:")
+        df_enriched.printSchema()
+
+        # --- 7. Save Processed Data to HDFS ---
+        print(f"\n--- Step 7: Saving processed data to {HDFS_PROCESSED_DATA_PATH} ---")
+        df_enriched.write.mode("overwrite").parquet(HDFS_PROCESSED_DATA_PATH)
+        print("Processed data successfully saved to HDFS.")
+
+    except Exception as e:
+        print(f"An error occurred during the process: {e}")
+    finally:
+        # --- Cleanup ---
+        print("\nStopping Spark session.")
+        spark.stop()
+
+if __name__ == '__main__':
+    main()
