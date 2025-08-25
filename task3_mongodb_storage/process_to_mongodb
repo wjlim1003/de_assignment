@@ -1,0 +1,158 @@
+# =============================================================================
+# Task 3: Process Data and Store in MongoDB Atlas (with Advanced Queries)
+#
+# This script uses pymongo 3.11 to connect to MongoDB Atlas and run two
+# advanced, SDG-relevant analytical queries.
+# =============================================================================
+
+import logging
+import os
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import struct, col
+from pymongo import MongoClient
+
+# --- Set log level to ERROR to keep the output clean ---
+logging.getLogger("py4j").setLevel(logging.ERROR)
+logging.getLogger("pyspark").setLevel(logging.ERROR)
+
+def get_mongo_uri():
+    """
+    Constructs the MongoDB URI securely by reading the password from an environment variable.
+    """
+    db_password = os.environ.get('MONGODB_PASSWORD')
+    if not db_password:
+        raise ValueError("MongoDB password not found. Please set the MONGODB_PASSWORD environment variable.")
+    uri_template = "mongodb+srv://wjlimwp22:<password>@cluster0.dmhgmtp.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+    return uri_template.replace("<password>", db_password)
+
+def run_spark_job(spark, mongo_uri):
+    """
+    Reads data from HDFS, transforms it, and saves it to MongoDB Atlas.
+    """
+    print("--- Starting Spark Job: HDFS to MongoDB Atlas ---")
+    hdfs_path = "hdfs://localhost:9000/user/student/water_quality_processed"
+    df_processed = spark.read.parquet(hdfs_path)
+    print(f"Successfully loaded {df_processed.count()} records from HDFS.")
+
+    print("Transforming DataFrame into the target document structure...")
+    df_transformed = df_processed.withColumn(
+        "time_features", struct(
+            col("year"), col("month"), col("day_of_month"),
+            col("day_of_week"), col("hour"), col("minute")
+        )
+    ).withColumn(
+        "measurements", struct(
+            col("water_speed_avg"), col("water_direction_avg"), col("chlorophyll"),
+            col("temperature_c"), col("dissolved_oxygen_mgL"), col("dissolved_oxygen_pct"),
+            col("ph"), col("salinity"), col("spec_conductance_uS_cm"), col("turbidity_ntu")
+        )
+    ).select("timestamp", "date", "time_features", "measurements")
+
+    mongo_db = "water_quality_db"
+    mongo_collection = "station_readings"
+
+    print(f"Writing data to MongoDB Atlas -> DB: '{mongo_db}', Collection: '{mongo_collection}'...")
+    df_transformed.write \
+        .format("mongodb") \
+        .mode("overwrite") \
+        .option("uri", mongo_uri) \
+        .option("database", mongo_db) \
+        .option("collection", mongo_collection) \
+        .save()
+    
+    print("Successfully wrote data to MongoDB Atlas.")
+
+def run_pymongo_queries(mongo_uri):
+    """
+    Connects to MongoDB Atlas and runs two advanced, SDG-relevant analytical queries.
+    """
+    print("\n--- Running Advanced Analytical Queries with PyMongo on Atlas ---")
+    
+    mongo_db_name = "water_quality_db"
+    mongo_collection_name = "station_readings"
+    client = None
+    try:
+        client = MongoClient(mongo_uri)
+        client.admin.command('ping')
+        print("Successfully connected to MongoDB Atlas!")
+        
+        db = client[mongo_db_name]
+        collection = db[mongo_collection_name]
+
+        # --- QUERY 1: Daily Water Quality Summary (Min, Max, Avg) ---
+        # This provides a rich view of daily conditions.
+        print("\n[Query 1] Generating Daily Water Quality Summary (Min/Max/Avg)...")
+        daily_summary_pipeline = [
+            {"$group": {"_id": "$date", "avg_ph": {"$avg": "$measurements.ph"}, "min_oxygen": {"$min": "$measurements.dissolved_oxygen_mgL"}, "max_turbidity": {"$max": "$measurements.turbidity_ntu"}}},
+            {"$sort": {"_id": 1}}
+        ]
+        daily_summaries = list(collection.aggregate(daily_summary_pipeline))
+        
+        print("--- Daily Summary Report ---")
+        for doc in daily_summaries:
+            date_str = doc['_id'].strftime('%Y-%m-%d')
+            print(f"Date: {date_str} | Avg pH: {doc['avg_ph']:.2f} | Min Oxygen: {doc['min_oxygen']:.2f} mg/L | Max Turbidity: {doc['max_turbidity']:.2f} NTU")
+
+        # --- NEW QUERY 2: Time of Day Analysis (Morning vs. Afternoon vs. Night) ---
+        # This query compares water quality across different parts of the day to find patterns.
+        print("\n[Query 2] Performing Time of Day Analysis...")
+        time_of_day_pipeline = [
+            {
+                # Step 1: Add a new field to categorize each record by time of day
+                "$addFields": {
+                    "time_of_day": {
+                        "$switch": {
+                            "branches": [
+                                {"case": {"$and": [{"$gte": ["$time_features.hour", 6]}, {"$lt": ["$time_features.hour", 12]}]}, "then": "Morning (6am-12pm)"},
+                                {"case": {"$and": [{"$gte": ["$time_features.hour", 12]}, {"$lt": ["$time_features.hour", 18]}]}, "then": "Afternoon (12pm-6pm)"}
+                            ],
+                            "default": "Night (6pm-6am)"
+                        }
+                    }
+                }
+            },
+            {
+                # Step 2: Group by the new category and calculate average metrics
+                "$group": {
+                    "_id": "$time_of_day",
+                    "record_count": {"$sum": 1},
+                    "avg_turbidity": {"$avg": "$measurements.turbidity_ntu"},
+                    "avg_oxygen": {"$avg": "$measurements.dissolved_oxygen_mgL"}
+                }
+            },
+            {"$sort": {"_id": 1}} # Sort alphabetically by period
+        ]
+        time_of_day_analysis = list(collection.aggregate(time_of_day_pipeline))
+
+        print(f"--- Time of Day Analysis Report ---")
+        for doc in time_of_day_analysis:
+            print(f"Period: {doc['_id']:<22} | Records: {doc['record_count']:<4} | Avg Turbidity: {doc['avg_turbidity']:.2f} NTU | Avg Oxygen: {doc['avg_oxygen']:.2f} mg/L")
+
+    except Exception as e:
+        print(f"An error occurred with PyMongo: {e}")
+    finally:
+        if client:
+            client.close()
+            print("\nMongoDB Atlas connection closed.")
+
+def main():
+    """
+    Main function to orchestrate the Spark job and PyMongo queries.
+    """
+    try:
+        mongo_atlas_uri = get_mongo_uri()
+        spark = SparkSession.builder \
+            .appName("HDFSToMongoDBAtlas") \
+            .config("spark.mongodb.write.connection.uri", mongo_atlas_uri) \
+            .config("spark.mongodb.read.connection.uri", mongo_atlas_uri) \
+            .config("spark.jars.packages", "org.mongodb.spark:mongo-spark-connector_2.13:10.3.0") \
+            .getOrCreate()
+        run_spark_job(spark, mongo_atlas_uri)
+        spark.stop()
+        print("Spark session stopped.")
+        run_pymongo_queries(mongo_atlas_uri)
+    except ValueError as e:
+        print(f"Configuration Error: {e}")
+
+if __name__ == '__main__':
+    main()
