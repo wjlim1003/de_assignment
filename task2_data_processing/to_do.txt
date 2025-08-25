@@ -1,2 +1,5 @@
 -check date sequence
 -check missing value
+
+
+hdfs dfs -rm -r /user/student/water_quality_processed
