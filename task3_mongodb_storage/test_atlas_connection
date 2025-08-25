@@ -1,0 +1,47 @@
+# test_atlas_connection.py
+# A simple script to test the connection to MongoDB Atlas.
+
+import os
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, OperationFailure
+
+def test_connection():
+    """
+    Constructs the URI, connects to MongoDB Atlas, and sends a ping.
+    """
+    # --- 1. Get the password from the environment variable ---
+    db_password = os.environ.get('MONGODB_PASSWORD')
+    
+    if not db_password:
+        print("ERROR: MongoDB password not found.")
+        print("Please set the MONGODB_PASSWORD environment variable before running.")
+        return
+
+    # --- 2. Construct the full connection URI ---
+    uri_template = "mongodb+srv://wjlimwp22:<password>@cluster0.dmhgmtp.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+    uri = uri_template.replace("<password>", db_password)
+
+    # --- 3. Create a client and connect to the server ---
+    print("Attempting to connect to MongoDB Atlas...")
+    try:
+        client = MongoClient(uri)
+
+        # The ping command is a lightweight way to test the connection.
+        client.admin.command('ping')
+        print("\nSUCCESS: Pinged your deployment. You successfully connected to MongoDB!")
+
+    except ConnectionFailure as e:
+        print(f"\nERROR: Connection failed. Could not connect to MongoDB.")
+        print("Common reasons:")
+        print("  - Incorrect password.")
+        print("  - Your current IP address is not in the Atlas IP Access List.")
+        print("  - Firewall is blocking the connection.")
+        print(f"Details: {e}")
+    except OperationFailure as e:
+        print(f"\nERROR: Authentication failed. This is likely an incorrect username or password.")
+        print(f"Details: {e}")
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}")
+
+if __name__ == '__main__':
+    test_connection()
