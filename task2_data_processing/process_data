@@ -1,5 +1,5 @@
 # =============================================================================
-# Task 2: Process and Clean Water Quality Data
+# Task 2: Process and Clean Water Quality Data (Final Corrected Version)
 #
 # This script reads the raw Parquet data from HDFS, performs a series of
 # cleaning, transformation, and enrichment steps, and saves the final,
@@ -28,7 +28,8 @@ def main():
         # --- 1. Load Raw Data ---
         print(f"\n--- Step 1: Loading raw data from {HDFS_RAW_DATA_PATH} ---")
         df_raw = spark.read.parquet(HDFS_RAW_DATA_PATH)
-        print(f"Successfully loaded {df_raw.count()} raw records.")
+        initial_count = df_raw.count()
+        print(f"Successfully loaded {initial_count} raw records.")
 
         # --- 2. Drop Unimportant Columns ---
         print("\n--- Step 2: Dropping unimportant columns ---")
@@ -41,14 +42,25 @@ def main():
         df_dropped = df_raw.drop(*columns_to_drop)
         print("Columns dropped successfully.")
 
-        # --- 3. Handle Missing Values ---
-        print("\n--- Step 3: Removing any rows with missing values ---")
-        df_no_missing = df_dropped.na.drop()
-        print("Rows with missing values removed.")
+        # --- 3. Handle Missing Values (Robustly) ---
+        print("\n--- Step 3: Removing rows with missing or empty values ---")
+        
+        # First, remove any rows with actual NULLs
+        df_no_nulls = df_dropped.na.drop()
+        
+        # --- THIS IS THE CORRECTED STEP ---
+        # Second, explicitly filter out rows where critical columns have empty strings.
+        # If 'Temperature' is empty, the record is not useful for our analysis.
+        df_clean = df_no_nulls.filter(col("Temperature") != "")
+        
+        final_count = df_clean.count()
+        records_removed = initial_count - final_count
+        print(f"Successfully cleaned data. Removed {records_removed} invalid records.")
+        print(f"Total valid records remaining: {final_count}")
 
         # --- 4. Convert Data Types ---
         print("\n--- Step 4: Converting data types ---")
-        df_typed = df_no_missing.withColumn("Timestamp", to_timestamp(col("Timestamp"), "M/d/yyyy H:mm"))
+        df_typed = df_clean.withColumn("Timestamp", to_timestamp(col("Timestamp"), "M/d/yyyy H:mm"))
         numeric_cols = [
             "Average Water Speed", "Average Water Direction", "Chlorophyll", "Temperature",
             "Dissolved Oxygen", "Dissolved Oxygen (%Saturation)", "pH", "Salinity",
