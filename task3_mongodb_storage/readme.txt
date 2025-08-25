@@ -1,1 +1,1 @@
-spark-submit task3_mongodb_storage/process_to_mongodb.py
+spark-submit process_to_mongodb.py
